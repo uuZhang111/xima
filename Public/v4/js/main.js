@@ -218,28 +218,45 @@
     });
   }
 
-  /* ---------- 8. 悬浮联系：电脑微信卡片 / 手机电话+微信 ---------- */
+  /* ---------- 8. 悬浮联系：电话 + 微信，居中弹窗 ---------- */
   var CONTACT_CONFIG = {
     phoneDisplay: "139-3791-2882",
     phoneTel: "+8613937912882",
+    phoneCopy: "13937912882",
     wechatId: "z13937912882",
     wechatQrImage: "/images/wechat-qr.png",
-    wechatAcqLink: ""
+    workHours: "工作日 8:30–17:30"
   };
 
   function trackEvent(name) {}
 
+  function siteAsset(path) {
+    if (!path || /^([a-z]+:)?\/\//i.test(path) || path.charAt(0) !== "/") return path;
+    var script = document.querySelector("script[src*='main.js']");
+    var src = script ? (script.getAttribute("src") || "") : "";
+    var root = src.replace(/Public\/v4\/js\/main\.js(?:\?.*)?$/, "");
+    return root + path.replace(/^\//, "");
+  }
+
   function isMobileContact() {
-    return window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
+    return window.matchMedia("(max-width: 768px)").matches;
   }
 
   function isWeChatBrowser() {
     return /MicroMessenger/i.test(navigator.userAgent);
   }
 
+  function escHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
   function copyText(text) {
-    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).catch(function () {
+        return fallbackCopy(text);
+      });
     }
     return fallbackCopy(text);
   }
@@ -279,158 +296,127 @@
     var dock = $("#xmContactDock");
     if (!dock) return;
     var cfg = CONTACT_CONFIG;
-    var mobileQuery = window.matchMedia("(max-width: 768px), (pointer: coarse)");
-    var hideTimer = null;
+    var modal = null;
     var copyTimer = null;
-    var sheet = null;
     var lastTrigger = null;
+    var scrollLocked = false;
 
-    function closeSheet() {
-      if (!sheet) return;
-      sheet.classList.remove("is-open");
-      sheet.setAttribute("aria-hidden", "true");
+    function lockScroll() {
+      if (scrollLocked) return;
+      scrollLocked = true;
+      doc.documentElement.style.overflow = "hidden";
+      doc.body.style.overflow = "hidden";
+    }
+
+    function unlockScroll() {
+      if (!scrollLocked) return;
+      scrollLocked = false;
+      doc.documentElement.style.overflow = "";
+      doc.body.style.overflow = "";
+    }
+
+    function markCopied(button, label) {
+      button.textContent = "已复制 ✓";
+      button.classList.add("is-done");
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(function () {
+        button.textContent = label;
+        button.classList.remove("is-done");
+      }, 2000);
+    }
+
+    function bindCopy(button, text, label, eventName) {
+      button.addEventListener("click", function () {
+        trackEvent(eventName);
+        copyText(text).then(function () {
+          markCopied(button, label);
+        }).catch(function () {});
+      });
+    }
+
+    function ensureModal() {
+      if (modal) return modal;
+      modal = doc.createElement("div");
+      modal.className = "xm-modal";
+      modal.setAttribute("aria-hidden", "true");
+      modal.innerHTML =
+        '<div class="xm-modal__mask" data-close="1"></div>' +
+        '<div class="xm-modal__card" role="dialog" aria-modal="true" aria-labelledby="xmModalTitle">' +
+          '<button type="button" class="xm-modal__close" data-close="1" aria-label="关闭">×</button>' +
+          '<h2 class="xm-modal__title" id="xmModalTitle"></h2>' +
+          '<div class="xm-modal__main"></div>' +
+        "</div>";
+      doc.body.appendChild(modal);
+      modal.addEventListener("click", function (e) {
+        if (e.target.getAttribute("data-close") === "1") closeModal();
+      });
+      return modal;
+    }
+
+    function fillModal(kind) {
+      var el = ensureModal();
+      var title = $(".xm-modal__title", el);
+      var main = $(".xm-modal__main", el);
+      if (kind === "wechat") {
+        title.textContent = "微信扫码，添加专属顾问";
+        main.innerHTML =
+          '<img class="xm-modal__qr" src="' + escHtml(siteAsset(cfg.wechatQrImage)) + '" alt="微信二维码" width="200" height="200">' +
+          '<p class="xm-modal__hint">' + (isWeChatBrowser() ? "长按识别二维码添加" : "扫一扫二维码，添加我为好友") + "</p>" +
+          '<div class="xm-modal__bar"><span class="xm-modal__id">微信号：' + escHtml(cfg.wechatId) + '</span>' +
+          '<button type="button" class="xm-modal__copy">复制</button></div>';
+        bindCopy($(".xm-modal__copy", main), cfg.wechatId, "复制", "contact_wechat_copy");
+      } else {
+        title.textContent = "电话咨询";
+        main.innerHTML =
+          '<p class="xm-modal__phone">' + escHtml(cfg.phoneDisplay) + "</p>" +
+          '<button type="button" class="xm-modal__copy">复制号码</button>' +
+          '<p class="xm-modal__note">' + escHtml(cfg.workHours) + "</p>";
+        bindCopy($(".xm-modal__copy", main), cfg.phoneCopy, "复制号码", "contact_phone_copy");
+      }
+    }
+
+    function openModal(kind, trigger) {
+      lastTrigger = trigger || null;
+      fillModal(kind);
+      var el = ensureModal();
+      el.setAttribute("aria-hidden", "false");
+      el.classList.remove("is-open");
+      void el.offsetWidth;
+      el.classList.add("is-open");
+      lockScroll();
+      var closeBtn = $(".xm-modal__close", el);
+      if (closeBtn) closeBtn.focus();
+    }
+
+    function closeModal() {
+      if (!modal) return;
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+      unlockScroll();
       if (lastTrigger) lastTrigger.focus();
     }
 
-    function ensureSheet() {
-      if (sheet) return sheet;
-      sheet = doc.createElement("div");
-      sheet.className = "xm-contact-sheet";
-      sheet.setAttribute("aria-hidden", "true");
-      sheet.innerHTML =
-        '<div class="xm-contact-sheet__mask" data-close="1"></div>' +
-        '<div class="xm-contact-sheet__panel" role="dialog" aria-modal="true" aria-labelledby="xmContactSheetTitle">' +
-          '<h2 class="xm-contact-sheet__title" id="xmContactSheetTitle">添加微信，获取报价与选型方案</h2>' +
-          '<p class="xm-contact-sheet__id">微信号 <b>' + cfg.wechatId + '</b></p>' +
-          '<button type="button" class="xm-contact-sheet__copy">复制微信号</button>' +
-          '<p class="xm-contact-sheet__status" role="status"></p>' +
-          (isWeChatBrowser() ? "" : '<a class="xm-contact-sheet__open" href="weixin://">打开微信</a>') +
-          '<img class="xm-contact-sheet__qr" src="' + cfg.wechatQrImage + '" alt="微信二维码" width="180" height="180">' +
-          '<p class="xm-contact-sheet__hint">' + (isWeChatBrowser() ? "长按识别二维码添加" : "截图后在微信「扫一扫」相册中识别") + "</p>" +
-        "</div>";
-      doc.body.appendChild(sheet);
-      sheet.addEventListener("click", function (e) {
-        if (e.target.getAttribute("data-close") === "1") closeSheet();
-      });
-      var copyBtn = $(".xm-contact-sheet__copy", sheet);
-      var status = $(".xm-contact-sheet__status", sheet);
-      copyBtn.addEventListener("click", function () {
-        trackEvent("contact_wechat_copy");
-        copyText(cfg.wechatId).then(function () {
-          copyBtn.textContent = "已复制 ✓";
-          copyBtn.classList.add("is-done");
-          status.textContent = "已复制，打开微信粘贴搜索即可添加";
-          clearTimeout(copyTimer);
-          copyTimer = setTimeout(function () {
-            copyBtn.textContent = "复制微信号";
-            copyBtn.classList.remove("is-done");
-          }, 2000);
-        });
-      });
-      return sheet;
-    }
+    dock.innerHTML =
+      '<a class="xm-contact-btn xm-contact-btn--phone" href="tel:' + escHtml(cfg.phoneTel) + '" aria-label="拨打电话 ' + escHtml(cfg.phoneDisplay) + '">' + phoneIcon() + "</a>" +
+      '<button type="button" class="xm-contact-btn xm-contact-btn--wechat" aria-label="微信咨询">' + wechatIcon() + "</button>";
 
-    function openSheet(trigger) {
-      lastTrigger = trigger;
-      var el = ensureSheet();
-      el.classList.add("is-open");
-      el.setAttribute("aria-hidden", "false");
-      var copyBtn = $(".xm-contact-sheet__copy", el);
-      if (copyBtn) copyBtn.focus();
-    }
+    var phone = $(".xm-contact-btn--phone", dock);
+    var wechat = $(".xm-contact-btn--wechat", dock);
 
-    function render() {
-      clearTimeout(hideTimer);
-      closeSheet();
-      dock._closeCard = null;
-      var mobile = isMobileContact();
-      if (mobile) {
-        dock.innerHTML =
-          '<a class="xm-contact-btn xm-contact-btn--phone" href="tel:' + cfg.phoneTel + '" aria-label="拨打电话 ' + cfg.phoneDisplay + '">' + phoneIcon() + "</a>" +
-          '<button type="button" class="xm-contact-btn xm-contact-btn--wechat" aria-label="添加微信 ' + cfg.wechatId + '">' + wechatIcon() + "</button>";
-        var phone = $(".xm-contact-btn--phone", dock);
-        var wechat = $(".xm-contact-btn--wechat", dock);
-        phone.addEventListener("click", function () {
-          trackEvent("contact_phone_click");
-        });
-        wechat.addEventListener("click", function () {
-          trackEvent("contact_wechat_click");
-          if (cfg.wechatAcqLink) {
-            window.location.href = cfg.wechatAcqLink;
-            return;
-          }
-          openSheet(wechat);
-        });
-        return;
-      }
-
-      dock.innerHTML =
-        '<div class="xm-contact-pop">' +
-          '<div class="xm-contact-card" aria-hidden="true">' +
-            '<p class="xm-contact-card__title">微信扫码，添加专属顾问</p>' +
-            '<img class="xm-contact-card__qr" src="' + cfg.wechatQrImage + '" alt="微信二维码" width="180" height="180">' +
-            '<p class="xm-contact-card__id"><b>' + cfg.wechatId + '</b><button type="button" class="xm-contact-copy">复制</button></p>' +
-            '<p class="xm-contact-card__tel">或致电 <a href="tel:' + cfg.phoneTel + '">' + cfg.phoneDisplay + "</a></p>" +
-          "</div>" +
-          '<button type="button" class="xm-contact-btn xm-contact-btn--wechat" aria-label="微信咨询" aria-expanded="false" aria-controls="xmContactCard">' + wechatIcon() + "</button>" +
-        "</div>";
-      var pop = $(".xm-contact-pop", dock);
-      var card = $(".xm-contact-card", dock);
-      var btn = $(".xm-contact-btn--wechat", dock);
-      var copyBtn = $(".xm-contact-copy", dock);
-      card.id = "xmContactCard";
-
-      function openCard() {
-        clearTimeout(hideTimer);
-        card.classList.add("is-open");
-        card.setAttribute("aria-hidden", "false");
-        btn.setAttribute("aria-expanded", "true");
-      }
-      function closeCard() {
-        card.classList.remove("is-open");
-        card.setAttribute("aria-hidden", "true");
-        btn.setAttribute("aria-expanded", "false");
-      }
-      pop.addEventListener("mouseenter", openCard);
-      pop.addEventListener("mouseleave", function () {
-        clearTimeout(hideTimer);
-        hideTimer = setTimeout(closeCard, 300);
-      });
-      btn.addEventListener("click", function () {
-        trackEvent("contact_wechat_click");
-        if (card.classList.contains("is-open")) closeCard();
-        else openCard();
-      });
-      copyBtn.addEventListener("click", function () {
-        trackEvent("contact_wechat_copy");
-        copyText(cfg.wechatId).then(function () {
-          copyBtn.textContent = "已复制 ✓";
-          copyBtn.classList.add("is-done");
-          clearTimeout(copyTimer);
-          copyTimer = setTimeout(function () {
-            copyBtn.textContent = "复制";
-            copyBtn.classList.remove("is-done");
-          }, 2000);
-        });
-      });
-      dock._closeCard = closeCard;
-    }
-
-    render();
-    function onModeChange() { render(); }
-    if (mobileQuery.addEventListener) mobileQuery.addEventListener("change", onModeChange);
-    else if (mobileQuery.addListener) mobileQuery.addListener(onModeChange);
-
-    doc.addEventListener("click", function (e) {
-      if (!dock.contains(e.target) && dock._closeCard) dock._closeCard();
+    phone.addEventListener("click", function (e) {
+      trackEvent("contact_phone_click");
+      if (isMobileContact()) return;
+      e.preventDefault();
+      openModal("phone", phone);
     });
+
+    wechat.addEventListener("click", function () {
+      trackEvent("contact_wechat_click");
+      openModal("wechat", wechat);
+    });
+
     doc.addEventListener("keydown", function (e) {
-      if (e.key !== "Escape") return;
-      if (sheet && sheet.classList.contains("is-open")) {
-        closeSheet();
-        return;
-      }
-      if (dock._closeCard) dock._closeCard();
+      if (e.key === "Escape" && modal && modal.classList.contains("is-open")) closeModal();
     });
   }
 
